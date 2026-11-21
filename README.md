@@ -4,7 +4,7 @@
 
 **Real‑time auctions where every watcher sees the price instantly, late bids extend the clock, and there is never any doubt about who won.**
 
-[**Live demo →**](__LIVE_URL__)
+[**Live demo →**](https://live-auction-platform-alpha.vercel.app)
 
 ![Next.js](https://img.shields.io/badge/Next.js-15-000?logo=nextdotjs)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)

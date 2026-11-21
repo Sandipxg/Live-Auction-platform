@@ -22,13 +22,13 @@ _Last updated: 2026-11-21_
 | ✅ | Self‑refilling demo inventory | Keeps ≥ 6 auctions open on the public demo |
 | ✅ | Unit tests (14) | Engine rules + concurrency + idempotency |
 | ✅ | Docs: Aim, Tasks, Context, Architecture, Decisions; README with diagrams | |
-| ✅ | Deploy to Vercel | |
+| ✅ | Deploy to Vercel | https://live-auction-platform-alpha.vercel.app |
 
 ## Milestone 2 — Feels alive ⬜
 
 | Status | Task |
 |---|---|
-| ⬜ | Connect Upstash Redis on Vercel (shared state across all instances) |
+| 🟡 | Connect Upstash Redis on Vercel (shared state across all instances) — live demo currently on the in-memory fallback |
 | ⬜ | Watcher count ("1,204 watching") |
 | ⬜ | Sound + vibration on outbid (opt‑in) |
 | ⬜ | Simulated bidders for demo auctions |
