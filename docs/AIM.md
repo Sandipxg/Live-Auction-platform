@@ -33,9 +33,17 @@ The product is done when every statement below is true and demonstrably tested.
 | L2 | Countdown agrees across devices | Within network RTT (server clock offset applied) | Same |
 | L3 | Watchers never see the price go backwards | Versioned snapshots; older versions dropped | Same |
 
+### Identity (v0.2)
+
+| # | Requirement | Proof |
+|---|---|---|
+| A1 | Anyone can watch; only logged‑in users can bid or start an auction. | API returns `401` without a session; UI shows "Log in to bid" |
+| A2 | A bid is always recorded under the logged‑in user — the browser cannot claim to be someone else. | E2E test: forged `bidderName` in body is ignored |
+| A3 | Passwords are never stored in plain text; sessions cannot be forged. | `tests/auth.test.ts` — scrypt, tampered/expired tokens rejected |
+
 ### Usability
 
-- A first-time visitor can place a bid in **under 10 seconds**: pick a name, tap one button.
+- A first-time visitor can place a bid in **under 10 seconds**: tap a demo account, tap one button.
 - Works on a 360 px phone and on desktop; respects reduced‑motion and dark mode.
 - Every rejection tells the user what to do next ("Next bid: ₹1,300").
 
@@ -46,4 +54,4 @@ The product is done when every statement below is true and demonstrably tested.
 
 ## Out of scope for now
 
-Accounts and authentication, payments, reserve prices, proxy (automatic) bidding, images uploads, moderation. Tracked in [TASKS.md](TASKS.md).
+Payments, password reset / email verification, reserve prices, proxy (automatic) bidding, images uploads, moderation. Tracked in [TASKS.md](TASKS.md).

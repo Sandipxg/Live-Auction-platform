@@ -9,8 +9,8 @@
 ![Next.js](https://img.shields.io/badge/Next.js-15-000?logo=nextdotjs)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)
-![Redis](https://img.shields.io/badge/Upstash-Redis-00e9a3?logo=redis&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-14%20passing-14804a)
+![Redis](https://img.shields.io/badge/Redis-pub%2Fsub-dc382d?logo=redis&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-27%20passing-0f7343)
 ![Deploy](https://img.shields.io/badge/deployed%20on-Vercel-000?logo=vercel)
 
 </div>
@@ -20,7 +20,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/lobby.png" alt="Lobby with live prices and countdowns" width="560">
+  <img src="docs/screenshots/lobby.png" alt="Lobby with live prices and countdowns" width="400">
+  &nbsp;
+  <img src="docs/screenshots/login.png" alt="Login with one-tap demo accounts" width="300">
   &nbsp;
   <img src="docs/screenshots/mobile.png" alt="Auction room on a phone" width="200">
 </p>
@@ -35,11 +37,12 @@
 
 | Requirement | Answer | Where |
 |---|---|---|
-| See the price almost immediately | Server‑Sent Events push a new snapshot the moment a bid is accepted | [`stream/route.ts`](app/api/auctions/[id]/stream/route.ts) |
+| See the price almost immediately | A bid commit PUBLISHes to Redis; every server instance pushes the new snapshot to its watchers over Server‑Sent Events (~70 ms across instances) | [`stream/route.ts`](app/api/auctions/[id]/stream/route.ts) |
 | No doubt about who won | Atomic compare‑and‑set on a version number; **one clock** (Redis `TIME`) decides the close; "closed" is derived from time, never a flag | [`engine.ts`](lib/engine.ts) · [`redis.ts`](lib/store/redis.ts) |
 | Late bids extend the auction | Any bid with < 10 s left resets the clock to 10 s | [`decideBid`](lib/engine.ts) |
 | Bids in the final seconds | Idempotent `bidId` so a panicked double‑tap or retry never counts twice | [D7](docs/DECISIONS.md) |
 | Same countdown on every device | Clients run on server time (offset from `serverNow`) | [`client.ts`](lib/client.ts) |
+| Know who bid | Log in to bid; the bidder is taken from a signed session cookie, never from the request | [`auth.ts`](lib/auth.ts) |
 
 ## How a bid flows
 
@@ -51,13 +54,14 @@ sequenceDiagram
   participant R as Redis (one clock)
   participant W as Every watcher
 
-  A->>S: Bid ₹1,300 (bidId=x)
+  A->>S: Bid ₹1,300 (bidId=x) + session cookie
+  S->>S: verify session → bidder = Alice
   S->>R: read auction v7 + TIME
   S->>S: engine.decideBid → ok, v8<br/>(<10 s left → endsAt = now+10 s)
   S->>R: commit if still v7 AND TIME < endsAt
   R-->>S: OK
   S-->>A: You lead at ₹1,300
-  R-->>W: v8 → SSE snapshot (price flashes, "+10s")
+  R-->>W: PUBLISH v8 → SSE snapshot on every instance<br/>(price flashes, "+10s")
 ```
 
 Two bids racing for the same step? Only one commit sees `v7`; the other re‑reads `v8` and is told the new minimum. A bid that reaches Redis even 1 ms after `endsAt` is rejected — so the leader at close is the winner, by construction.
@@ -74,12 +78,14 @@ flowchart LR
   W -- yes --> C["Closed · top bid wins"]
 ```
 
-## Features (v0.1)
+## Features (v0.2)
+
+**Try it:** open the live demo, tap **Log in → Alice**. Open a second browser (or incognito), log in as **Bob**, open the same auction, and bid against yourself.
 
 - **Lobby** — every open auction with live price and a server‑synced countdown; *Open now* / *Ended* tabs.
 - **Auction room** — huge price and clock, one‑tap bid buttons (minimum, +2×, +5× increment) or a custom amount, live bid history, "You've been outbid" alert, extension notice, winner banner.
 - **Start an auction** — title, description, starting price, increment, duration; live the moment it's created.
-- **No sign‑up** — pick a display name and bid (auth comes later, see [Tasks](docs/TASKS.md)).
+- **Accounts** — sign up with a username and password, or one tap on a demo account (Alice, Bob, Priya · `demo1234`). Anyone can watch; logging in is required to bid or start an auction.
 - Mobile‑first, dark mode, reduced‑motion aware.
 
 ## Run locally
@@ -89,14 +95,19 @@ git clone https://github.com/Sandipxg/Live-Auction-platform.git
 cd Live-Auction-platform
 npm install
 npm run dev          # http://localhost:3000 — uses the in-memory store, no setup
-npm test             # 14 tests: rules, concurrency, idempotency
+npm test             # rules, concurrency, idempotency, auth (Redis suite skipped)
 ```
 
 Open the same auction in two browser windows and bid against yourself.
 
 ### Use Redis (required for multi‑instance hosting)
 
-Copy `.env.example` to `.env.local` and fill in an [Upstash](https://upstash.com) REST URL and token. On Vercel, add **Upstash for Redis** from the Marketplace — it sets the variables for you (`KV_REST_API_URL` / `KV_REST_API_TOKEN` are also recognised).
+Copy `.env.example` to `.env.local` and set `REDIS_URL` (any Redis 6.2+, e.g. `redis://localhost:6379` or a `rediss://` cloud URL) and `AUTH_SECRET`. On Vercel, add **Redis** from the Storage tab — it sets `REDIS_URL` for you.
+
+```bash
+redis-server --port 6390 &
+REDIS_TEST_URL=redis://localhost:6390 npm test   # all 27 tests, incl. the Redis store
+```
 
 ## Documentation
 
@@ -112,16 +123,17 @@ Copy `.env.example` to `.env.local` and fill in an [Upstash](https://upstash.com
 
 ```
 app/          pages + API routes (Next.js App Router)
-components/   Lobby, AuctionRoom, Tile, StatusPill
+components/   Lobby, AuctionRoom, LoginForm, UserMenu, …
 lib/engine.ts the auction rules — pure, tested
 lib/store/    memory + Redis stores behind one interface
+lib/auth.ts   passwords, signed sessions, accounts
 tests/        Vitest
 docs/         Aim · Tasks · Context · Architecture · Decisions
 ```
 
 ## Roadmap
 
-Milestone 2 — watcher counts, outbid sound, simulated bidders, images · Milestone 3 — auth, reserve price, proxy bidding · Milestone 4 — WebSocket fan‑out and load testing at 300k watchers. Details in [docs/TASKS.md](docs/TASKS.md).
+Milestone 3 — watcher counts, outbid sound, simulated bidders, images · Milestone 4 — production auth, reserve price, proxy bidding · Milestone 5 — WebSocket fan‑out and load testing at 300k watchers. Details in [docs/TASKS.md](docs/TASKS.md).
 
 ---
 

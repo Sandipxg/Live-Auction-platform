@@ -6,7 +6,8 @@
 |---|---|---|
 | Framework | **Next.js 15** (App Router) + **React 19** + **TypeScript** (strict) | One codebase for UI and API; first‑class on Vercel |
 | Live updates | **Server‑Sent Events** (`EventSource`) | One‑way server→browser push over plain HTTP; auto‑reconnect built in; works on serverless |
-| State (production) | **Upstash Redis** (REST) | Serverless‑friendly, atomic Lua scripts, a single authoritative clock (`TIME`) |
+| State (production) | **Redis** (Redis Cloud via Vercel Marketplace) with **ioredis** | Atomic Lua scripts, a single authoritative clock (`TIME`), pub/sub to push bids across instances |
+| Auth | Username/password, **scrypt** hashes, **HMAC‑signed httpOnly cookie** | Stateless sessions; no extra service ([D12](DECISIONS.md)) |
 | State (local) | In‑memory store | Zero setup: `npm run dev` just works |
 | Styling | Plain CSS with design tokens | No build plugins; every value documented in [CONTEXT.md](CONTEXT.md) |
 | Tests | **Vitest** | Fast, TypeScript‑native |
@@ -27,17 +28,17 @@ flowchart LR
     ENG["engine.ts<br/>pure rules"]
     SSE["GET /stream<br/>SSE"]
   end
-  R[("Upstash Redis<br/>auction + version<br/>last 50 bids · seen bid ids<br/>TIME = the one clock")]
+  R[("Redis<br/>auction + version · last 50 bids<br/>seen bid ids · users<br/>TIME = the one clock")]
 
-  UI -- "① place bid" --> API
+  UI -- "① place bid (session cookie)" --> API
   API -- "② decide" --> ENG
-  API -- "③ atomic compare-and-set" --> R
-  SSE -- "④ version changed?" --> R
+  API -- "③ atomic compare-and-set + PUBLISH" --> R
+  R -- "④ pub/sub: new version" --> SSE
   SSE -- "⑤ push snapshot" --> ES
   ES --> UI
 ```
 
-Without Redis credentials the same code uses the in‑memory store and pushes updates instantly through an in‑process event emitter.
+Without `REDIS_URL` the same code uses the in‑memory store and pushes updates through an in‑process event emitter.
 
 ## Placing a bid
 
@@ -49,7 +50,11 @@ sequenceDiagram
   participant E as engine.decideBid
   participant R as Redis
 
-  U->>F: POST /api/auctions/:id/bids {bidId, amount}
+  U->>F: POST /api/auctions/:id/bids {bidId, amount} + session cookie
+  F->>F: verify cookie signature → bidder = session user
+  alt no valid session
+    F-->>U: 401 Log in to bid
+  end
   loop until committed or rejected (max 12)
     F->>R: GET auction, TIME
     F->>E: decideBid(auction, bid, now)
@@ -59,7 +64,7 @@ sequenceDiagram
     else accepted
       E-->>F: next auction state (version+1, maybe endsAt = now+10s)
       F->>R: EVAL commit(expectedVersion, next, bid)
-      Note over R: atomic: version unchanged?<br/>TIME < endsAt?<br/>bidId unseen?
+      Note over R: atomic: version unchanged?<br/>TIME < endsAt?<br/>bidId unseen?<br/>then PUBLISH new version
       alt OK
         R-->>F: OK
         F-->>U: 200 {auction, bid}
@@ -110,7 +115,9 @@ The countdown runs on **server time** (`Date.now() + offset`), so every device s
 ├── app/                         Next.js App Router
 │   ├── page.tsx                 Lobby (open / ended auctions)
 │   ├── auctions/[id]/page.tsx   Auction room (server-rendered first snapshot)
-│   ├── new/page.tsx             Create an auction
+│   ├── new/page.tsx             Create an auction (login required)
+│   ├── login/page.tsx           Log in · sign up · demo accounts
+│   ├── api/auth/                login · signup · logout
 │   ├── api/auctions/
 │   │   ├── route.ts             GET list · POST create
 │   │   └── [id]/
@@ -119,30 +126,36 @@ The countdown runs on **server time** (`Date.now() + offset`), so every device s
 │   │       └── stream/route.ts  GET live stream (SSE)
 │   ├── layout.tsx · globals.css Shell + design tokens
 │   └── not-found.tsx
-├── components/                  Lobby, AuctionRoom (bid panel, result), Tile, StatusPill
+├── components/                  Lobby, AuctionRoom, LoginForm, UserMenu, NewAuctionForm, Tile, StatusPill
 ├── lib/
 │   ├── engine.ts                ★ The rules. Pure functions, no I/O, fully tested
+│   ├── auth.ts                  Password hashing, signed sessions, accounts
 │   ├── types.ts                 Auction, Bid, results
 │   ├── store/
 │   │   ├── types.ts             AuctionStore interface
 │   │   ├── memory.ts            Local / fallback store
-│   │   ├── redis.ts             Production store (Lua compare-and-set)
+│   │   ├── redis.ts             Production store (Lua compare-and-set + pub/sub)
 │   │   └── index.ts             Picks Redis if configured
 │   ├── demo.ts                  Keeps demo inventory topped up
-│   ├── client.ts                Browser: identity, server clock
+│   ├── client.ts                Browser: server clock
 │   └── format.ts                ₹ and countdown formatting
-├── tests/                       Vitest: engine rules, concurrency, idempotency
+├── tests/                       Vitest: rules, concurrency, idempotency, Redis store, auth
 └── docs/                        Aim · Tasks · Context · Architecture · Decisions
 ```
 
 ## API
 
+🔒 = requires the session cookie.
+
 | Method | Path | Body | Returns |
 |---|---|---|---|
+| `POST` | `/api/auth/signup` | `{ username, password, displayName? }` | `201 { user }` + cookie |
+| `POST` | `/api/auth/login` | `{ username, password }` | `{ user }` + cookie · `401` |
+| `POST` | `/api/auth/logout` | — | clears cookie |
 | `GET` | `/api/auctions` | — | `{ auctions, serverNow, store }` |
-| `POST` | `/api/auctions` | `{ title, description?, startingPrice, minIncrement, durationMinutes }` | `201 { auction }` |
+| `POST` 🔒 | `/api/auctions` | `{ title, description?, startingPrice, minIncrement, durationMinutes }` | `201 { auction }` · `401` |
 | `GET` | `/api/auctions/:id` | — | `{ auction, bids, serverNow }` |
-| `POST` | `/api/auctions/:id/bids` | `{ bidId, bidderId, bidderName, amount }` | `200 { ok, auction, bid }` · `409 { reason, minNextBid }` |
+| `POST` 🔒 | `/api/auctions/:id/bids` | `{ bidId, amount }` | `200 { ok, auction, bid }` · `409 { reason, minNextBid }` · `401` |
 | `GET` | `/api/auctions/:id/stream` | — | `text/event-stream`: `snapshot`, `ping` |
 
 ## Scaling path
@@ -169,7 +182,7 @@ flowchart LR
   G1 & G2 & Gn -- "coalesced snapshot<br/>≤ 10 / s" --> Watchers
 ```
 
-1. **Push instead of poll.** Replace per‑watcher Redis polling with one pub/sub message per accepted bid, fanned out by WebSocket gateways. Cost becomes O(bids), not O(watchers × time).
+1. **Dedicated fan‑out.** Bids are already pushed by pub/sub (one message per accepted bid). Move the watcher connections off serverless functions onto WebSocket gateways that each hold ~50k sockets.
 2. **Coalesce.** During the final‑seconds storm, gateways send at most ~10 snapshots/s per auction; each carries the latest version, so nothing is lost.
 3. **Single writer per auction.** Route all bids for an auction to one owner (consistent hashing). Bids become a local, in‑order operation — no compare‑and‑set retries under contention.
 4. **Durable ledger.** Every accepted bid appended to Postgres for audit and dispute resolution.
