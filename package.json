@@ -14,7 +14,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@upstash/redis": "^1.41.0",
+    "ioredis": "^5.11.1",
     "next": "^15.5.29",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

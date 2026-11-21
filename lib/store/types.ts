@@ -1,4 +1,4 @@
-import type { Auction, AuctionSnapshot, BidInput, BidResult, CreateAuctionInput } from "../types";
+import type { Auction, AuctionSnapshot, BidInput, BidResult, CreateAuctionInput, User } from "../types";
 
 export interface AuctionStore {
   readonly kind: "memory" | "redis";
@@ -12,6 +12,11 @@ export interface AuctionStore {
   placeBid(input: BidInput): Promise<BidResult>;
   /** Runs `fn` at most once per `ttlMs` across all server instances. */
   once(key: string, ttlMs: number, fn: () => Promise<void>): Promise<void>;
-  /** Memory store only: push-based change notifications. */
-  subscribe?(id: string, listener: () => void): () => void;
+  /** Called whenever a bid on this auction is accepted, on any server instance. */
+  subscribe(id: string, listener: () => void): () => void;
+
+  /** Users (demo auth). Usernames are case-insensitive. */
+  getUser(username: string): Promise<User | null>;
+  /** Returns false if the username is already taken. Atomic. */
+  createUser(user: User): Promise<boolean>;
 }

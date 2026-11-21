@@ -1,17 +1,19 @@
 /**
- * Redis-backed store (Upstash REST), safe across many serverless instances.
+ * Redis-backed store (any Redis 6.2+ over TCP/TLS via REDIS_URL), safe across
+ * many serverless instances.
  *
  * Bids use optimistic concurrency:
  *   1. read the auction and Redis's clock,
  *   2. run the pure `decideBid` rules in TypeScript,
  *   3. commit with a Lua script that succeeds only if the version is unchanged
- *      AND Redis's own clock is still before the close time.
+ *      AND Redis's own clock is still before the close time, then PUBLISHes
+ *      the new version so every instance can push it to its watchers.
  * Lua scripts run atomically inside Redis, so two bids can never both win the
  * same price step, and no bid can land after the close — one clock decides.
  */
-import { Redis } from "@upstash/redis";
+import Redis from "ioredis";
 import { decideBid, MAX_BIDS_KEPT, minNextBid, newAuction, newId } from "../engine";
-import type { Auction, Bid, BidInput, BidResult, CreateAuctionInput } from "../types";
+import type { Auction, Bid, BidInput, BidResult, CreateAuctionInput, User } from "../types";
 import type { AuctionStore } from "./types";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -22,9 +24,16 @@ const k = {
   auction: (id: string) => `auc:${id}`,
   bids: (id: string) => `auc:${id}:bids`,
   ids: (id: string) => `auc:${id}:ids`,
+  channel: (id: string) => `auc:${id}:events`,
   lock: (key: string) => `lock:${key}`,
+  user: (username: string) => `user:${username.toLowerCase()}`,
 };
 
+/*
+ * KEYS: 1 auction, 2 bids list, 3 seen bid ids
+ * ARGV: 1 expected version, 2 next auction JSON, 3 bid JSON, 4 bid id,
+ *       5 max bids kept, 6 expire-at (ms), 7 pub/sub channel, 8 next version
+ */
 const COMMIT_BID = `
 local cur = redis.call('GET', KEYS[1])
 if not cur then return {'NOT_FOUND', '0'} end
@@ -40,23 +49,22 @@ redis.call('LTRIM', KEYS[2], 0, tonumber(ARGV[5]) - 1)
 redis.call('PEXPIREAT', KEYS[2], ARGV[6])
 redis.call('SADD', KEYS[3], ARGV[4])
 redis.call('PEXPIREAT', KEYS[3], ARGV[6])
+redis.call('PUBLISH', ARGV[7], ARGV[8])
 return {'OK', tostring(nowMs)}
 `;
 
-function parse<T>(v: unknown): T | null {
-  if (v == null) return null;
-  if (typeof v === "string") return JSON.parse(v) as T;
-  return v as T;
-}
-
+const parse = <T>(v: string | null): T | null => (v == null ? null : (JSON.parse(v) as T));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class RedisStore implements AuctionStore {
   readonly kind = "redis" as const;
+  private sub: Redis | null = null;
+  private listeners = new Map<string, Set<() => void>>();
+
   constructor(private redis: Redis) {}
 
   async now() {
-    const [s, us] = (await this.redis.time()) as [number, number];
+    const [s, us] = await this.redis.time();
     return Number(s) * 1000 + Math.floor(Number(us) / 1000);
   }
 
@@ -65,10 +73,9 @@ export class RedisStore implements AuctionStore {
   }
 
   async list(limit = 100) {
-    const now = await this.now();
-    const ids = (await this.redis.zrange(k.index, 0, limit - 1, { rev: true })) as string[];
+    const [now, ids] = await Promise.all([this.now(), this.redis.zrevrange(k.index, 0, limit - 1)]);
     if (ids.length === 0) return { auctions: [], serverNow: now };
-    const raw = await this.redis.mget<unknown[]>(...ids.map(k.auction));
+    const raw = await this.redis.mget(...ids.map(k.auction));
     const auctions = raw.map((r) => parse<Auction>(r)).filter((a): a is Auction => !!a);
     if (auctions.length < ids.length) {
       // Expired auctions: drop them from the index.
@@ -86,7 +93,7 @@ export class RedisStore implements AuctionStore {
       this.now(),
     ]);
     if (!auction) return null;
-    const bids = (rawBids as unknown[]).map((b) => parse<Bid>(b)!).filter(Boolean);
+    const bids = rawBids.map((b) => parse<Bid>(b)!).filter(Boolean);
     return { auction, bids, serverNow: now };
   }
 
@@ -100,8 +107,8 @@ export class RedisStore implements AuctionStore {
     const expireAt = auction.endsAt + RETENTION_MS;
     await this.redis
       .multi()
-      .set(k.auction(auction.id), JSON.stringify(auction), { pxat: expireAt })
-      .zadd(k.index, { score: auction.createdAt, member: auction.id })
+      .set(k.auction(auction.id), JSON.stringify(auction), "PXAT", expireAt)
+      .zadd(k.index, auction.createdAt, auction.id)
       .zremrangebyscore(k.index, 0, now - RETENTION_MS)
       .exec();
     return auction;
@@ -125,8 +132,18 @@ export class RedisStore implements AuctionStore {
       const expireAt = d.auction.endsAt + RETENTION_MS;
       const [status, at] = (await this.redis.eval(
         COMMIT_BID,
-        [k.auction(auction.id), k.bids(auction.id), k.ids(auction.id)],
-        [String(auction.version), JSON.stringify(d.auction), JSON.stringify(d.bid), input.bidId, String(MAX_BIDS_KEPT), String(expireAt)],
+        3,
+        k.auction(auction.id),
+        k.bids(auction.id),
+        k.ids(auction.id),
+        String(auction.version),
+        JSON.stringify(d.auction),
+        JSON.stringify(d.bid),
+        input.bidId,
+        String(MAX_BIDS_KEPT),
+        String(expireAt),
+        k.channel(auction.id),
+        String(d.auction.version),
       )) as [string, string];
       const serverNow = Number(at);
 
@@ -155,19 +172,56 @@ export class RedisStore implements AuctionStore {
   private async findBid(input: BidInput) {
     const isMember = await this.redis.sismember(k.ids(input.auctionId), input.bidId);
     if (!isMember) return null;
-    const raw = (await this.redis.lrange(k.bids(input.auctionId), 0, MAX_BIDS_KEPT - 1)) as unknown[];
+    const raw = await this.redis.lrange(k.bids(input.auctionId), 0, MAX_BIDS_KEPT - 1);
     return raw.map((b) => parse<Bid>(b)!).find((b) => b.id === input.bidId) ?? null;
   }
 
   async once(key: string, ttlMs: number, fn: () => Promise<void>) {
-    const got = await this.redis.set(k.lock(key), "1", { nx: true, px: ttlMs });
+    const got = await this.redis.set(k.lock(key), "1", "PX", ttlMs, "NX");
     if (got === "OK") await fn();
+  }
+
+  async getUser(username: string) {
+    return parse<User>(await this.redis.get(k.user(username)));
+  }
+
+  async createUser(user: User) {
+    const got = await this.redis.set(k.user(user.username), JSON.stringify(user), "NX");
+    return got === "OK";
+  }
+
+  /**
+   * One subscriber connection per server instance, shared by every watcher
+   * on that instance. Redis delivers each accepted bid once per instance.
+   */
+  subscribe(id: string, listener: () => void) {
+    const channel = k.channel(id);
+    if (!this.sub) {
+      this.sub = this.redis.duplicate();
+      this.sub.on("message", (ch: string) => this.listeners.get(ch)?.forEach((fn) => fn()));
+    }
+    let set = this.listeners.get(channel);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(channel, set);
+      void this.sub.subscribe(channel).catch(() => {});
+    }
+    set.add(listener);
+    return () => {
+      set!.delete(listener);
+      if (set!.size === 0) {
+        this.listeners.delete(channel);
+        void this.sub?.unsubscribe(channel).catch(() => {});
+      }
+    };
   }
 }
 
 export function redisFromEnv(): Redis | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN;
-  if (!url || !token) return null;
-  return new Redis({ url, token, automaticDeserialization: false });
+  const url = process.env.REDIS_URL ?? process.env.KV_URL;
+  if (!url) return null;
+  const g = globalThis as unknown as { __redis?: Redis };
+  // Reuse one connection per server instance across requests.
+  g.__redis ??= new Redis(url, { maxRetriesPerRequest: 2, enableAutoPipelining: true, connectTimeout: 5000 });
+  return g.__redis;
 }

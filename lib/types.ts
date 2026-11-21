@@ -59,11 +59,30 @@ export type BidRejection =
   | "BID_TOO_LOW"
   | "ALREADY_LEADING"
   | "INVALID"
+  | "UNAUTHORIZED"
   | "BUSY";
 
 export type BidResult =
   | { ok: true; auction: Auction; bid: Bid; duplicate?: boolean; serverNow: number }
   | { ok: false; reason: BidRejection; message: string; auction?: Auction; minNextBid?: Money; serverNow: number };
+
+export interface User {
+  id: string;
+  /** Lower-case login name, unique. */
+  username: string;
+  /** Shown on bids and as the winner. */
+  displayName: string;
+  /** `scrypt$<salt>$<hash>` — never the password itself. */
+  passwordHash: string;
+  createdAt: number;
+}
+
+/** What the browser is allowed to know about the signed-in user. */
+export interface SessionUser {
+  id: string;
+  username: string;
+  displayName: string;
+}
 
 export interface CreateAuctionInput {
   title: string;

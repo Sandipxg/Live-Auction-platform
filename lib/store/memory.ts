@@ -5,7 +5,7 @@
  */
 import { EventEmitter } from "node:events";
 import { decideBid, MAX_BIDS_KEPT, minNextBid, newAuction, newId } from "../engine";
-import type { Auction, Bid, BidInput, BidResult, CreateAuctionInput } from "../types";
+import type { Auction, Bid, BidInput, BidResult, CreateAuctionInput, User } from "../types";
 import type { AuctionStore } from "./types";
 
 interface Entry {
@@ -18,6 +18,7 @@ class MemoryStore implements AuctionStore {
   readonly kind = "memory" as const;
   private entries = new Map<string, Entry>();
   private locks = new Map<string, number>();
+  private users = new Map<string, User>();
   private events = new EventEmitter();
 
   constructor() {
@@ -77,6 +78,17 @@ class MemoryStore implements AuctionStore {
     if (Date.now() < until) return;
     this.locks.set(key, Date.now() + ttlMs);
     await fn();
+  }
+
+  async getUser(username: string) {
+    return this.users.get(username.toLowerCase()) ?? null;
+  }
+
+  async createUser(user: User) {
+    const key = user.username.toLowerCase();
+    if (this.users.has(key)) return false;
+    this.users.set(key, user);
+    return true;
   }
 
   subscribe(id: string, listener: () => void) {
