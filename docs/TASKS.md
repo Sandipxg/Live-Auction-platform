@@ -59,9 +59,13 @@ _Last updated: 2026-11-21 (v0.2)_
 
 ## Milestone 5 — Scale ⬜
 
+Design: [SCALING.md](SCALING.md) (target: 50,000 auctions, 2,00,000 watchers).
+
 | Status | Task |
 |---|---|
-| ⬜ | Dedicated WebSocket fan‑out tier (see Architecture → Scaling path) |
-| ⬜ | Per‑auction single‑writer (sharded by auction id) |
-| ⬜ | Load test: 300k watchers, 5k bids/s on one auction |
-| ⬜ | Durable bid ledger (Postgres) + audit export |
+| ✅ | Scaling design written: load model, architecture, capacity, latency budget, failure modes, load‑test plan |
+| ⬜ | Stage 1 — WebSocket gateway service: coalescing (≤10 frames/s), serialize‑once, backpressure |
+| ⬜ | Stage 2 — Decide inside Lua with shared test vectors; `WAIT 1`; per‑user bid rate limit |
+| ⬜ | Stage 3 — Redis Cluster with `{id}` hash tags + sharded pub/sub |
+| ⬜ | Stage 4 — Redis Stream → Postgres bid ledger; closer worker; CDN‑cached lobby |
+| ⬜ | Stage 5 — Load test: 2,00,000 sockets, 1,00,000 on one auction, 5,000 bids/s + chaos |

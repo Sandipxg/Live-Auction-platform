@@ -118,6 +118,7 @@ REDIS_TEST_URL=redis://localhost:6390 npm test   # all 27 tests, incl. the Redis
 | [Context](docs/CONTEXT.md) | Measured colours, type, spacing and motion |
 | [Architecture](docs/ARCHITECTURE.md) | Stack, diagrams, folder layout, API, scaling path |
 | [Decisions](docs/DECISIONS.md) | Major decisions and their trade‑offs |
+| [Scaling](docs/SCALING.md) | How live prices work, and the design for 50,000 auctions × 2,00,000 watchers |
 
 ## Project structure
 
@@ -128,7 +129,7 @@ lib/engine.ts the auction rules — pure, tested
 lib/store/    memory + Redis stores behind one interface
 lib/auth.ts   passwords, signed sessions, accounts
 tests/        Vitest
-docs/         Aim · Tasks · Context · Architecture · Decisions
+docs/         Aim · Tasks · Context · Architecture · Decisions · Scaling
 ```
 
 ## Roadmap

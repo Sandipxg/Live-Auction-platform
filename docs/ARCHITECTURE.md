@@ -140,7 +140,7 @@ The countdown runs on **server time** (`Date.now() + offset`), so every device s
 │   ├── client.ts                Browser: server clock
 │   └── format.ts                ₹ and countdown formatting
 ├── tests/                       Vitest: rules, concurrency, idempotency, Redis store, auth
-└── docs/                        Aim · Tasks · Context · Architecture · Decisions
+└── docs/                        Aim · Tasks · Context · Architecture · Decisions · Scaling
 ```
 
 ## API
@@ -159,6 +159,8 @@ The countdown runs on **server time** (`Date.now() + offset`), so every device s
 | `GET` | `/api/auctions/:id/stream` | — | `text/event-stream`: `snapshot`, `ping` |
 
 ## Scaling path
+
+> Full design with load model, capacity numbers, latency budget and failure modes: **[SCALING.md](SCALING.md)**.
 
 The prototype is correct at any scale; it is not yet *efficient* at the target scale (300k watchers on one auction). The upgrade path keeps the same rules engine and the same guarantees:
 
