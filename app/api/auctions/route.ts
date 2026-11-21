@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { ensureDemoInventory } from "@/lib/demo";
 import { validateCreate } from "@/lib/engine";
+import { currentUser } from "@/lib/auth";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  if (!(await currentUser())) return NextResponse.json({ error: "Log in to start an auction." }, { status: 401 });
   const body = await req.json().catch(() => null);
   const v = validateCreate(body);
   if (!v.ok) return NextResponse.json({ error: v.message }, { status: 400 });

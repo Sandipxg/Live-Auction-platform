@@ -3,15 +3,15 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { minNextBid, SNIPE_WINDOW_MS, statusOf } from "@/lib/engine";
 import { countdown, money, timeAgo } from "@/lib/format";
-import { syncClock, useIdentity, useServerNow } from "@/lib/client";
-import type { AuctionSnapshot, BidResult } from "@/lib/types";
+import { syncClock, useServerNow } from "@/lib/client";
+import type { AuctionSnapshot, BidResult, SessionUser } from "@/lib/types";
 import { StatusPill } from "./StatusPill";
 import { Tile } from "./Tile";
 
 type Conn = "connecting" | "live" | "reconnecting";
 type Notice = { kind: "ok" | "warn" | "info"; text: string } | null;
 
-export function AuctionRoom({ initial }: { initial: AuctionSnapshot }) {
+export function AuctionRoom({ initial, user }: { initial: AuctionSnapshot; user: SessionUser | null }) {
   const [snap, setSnap] = useState(initial);
   const [conn, setConn] = useState<Conn>("connecting");
   const [extendedAt, setExtendedAt] = useState(0);
@@ -95,7 +95,13 @@ export function AuctionRoom({ initial }: { initial: AuctionSnapshot }) {
             </div>
           </div>
 
-          {status === "closed" ? <ResultBanner snap={snap} /> : <BidPanel snap={snap} onResult={accept} />}
+          {status === "closed" ? (
+            <ResultBanner snap={snap} user={user} />
+          ) : user ? (
+            <BidPanel snap={snap} user={user} onResult={accept} />
+          ) : (
+            <LoginPrompt auctionId={a.id} />
+          )}
 
           <div className="rule">
             <strong>Fair finish.</strong> Any bid placed with less than 10 seconds left resets the clock to 10 seconds. The
@@ -127,11 +133,24 @@ export function AuctionRoom({ initial }: { initial: AuctionSnapshot }) {
   );
 }
 
-function ResultBanner({ snap }: { snap: AuctionSnapshot }) {
-  const { identity } = useIdentity();
+function LoginPrompt({ auctionId }: { auctionId: string }) {
+  return (
+    <div className="bid-panel login-prompt">
+      <div>
+        <strong>Log in to bid</strong>
+        <div className="muted small">You can watch freely. Bidding needs an account — or one tap with a demo account.</div>
+      </div>
+      <Link href={`/login?next=${encodeURIComponent(`/auctions/${auctionId}`)}`} className="btn btn-accent btn-lg">
+        Log in to bid
+      </Link>
+    </div>
+  );
+}
+
+function ResultBanner({ snap, user }: { snap: AuctionSnapshot; user: SessionUser | null }) {
   const a = snap.auction;
   if (!a.leaderId) return <div className="result none">This auction closed without any bids.</div>;
-  const mine = identity?.id === a.leaderId;
+  const mine = user?.id === a.leaderId;
   return (
     <div className={`result ${mine ? "mine" : ""}`}>
       <div className="result-title">{mine ? "You won this auction" : `Sold to ${a.leaderName}`}</div>
@@ -143,15 +162,13 @@ function ResultBanner({ snap }: { snap: AuctionSnapshot }) {
   );
 }
 
-function BidPanel({ snap, onResult }: { snap: AuctionSnapshot; onResult: (s: AuctionSnapshot) => void }) {
-  const { identity, save } = useIdentity();
+function BidPanel({ snap, user, onResult }: { snap: AuctionSnapshot; user: SessionUser; onResult: (s: AuctionSnapshot) => void }) {
   const a = snap.auction;
   const min = minNextBid(a);
-  const [name, setName] = useState("");
   const [custom, setCustom] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
-  const leading = !!identity && a.leaderId === identity.id;
+  const leading = a.leaderId === user.id;
   const pendingId = useRef<string | null>(null);
   const wasLeading = useRef(leading);
 
@@ -169,14 +186,6 @@ function BidPanel({ snap, onResult }: { snap: AuctionSnapshot; onResult: (s: Auc
   }, [min]);
 
   const place = async (amount: number) => {
-    let me = identity;
-    if (!me) {
-      if (name.trim().length < 2) {
-        setNotice({ kind: "warn", text: "Enter a display name (2+ characters) to bid." });
-        return;
-      }
-      me = save(name);
-    }
     setBusy(true);
     setNotice(null);
     // Same id on retry → the server never counts it twice.
@@ -185,7 +194,7 @@ function BidPanel({ snap, onResult }: { snap: AuctionSnapshot; onResult: (s: Auc
       const res = await fetch(`/api/auctions/${a.id}/bids`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bidId, bidderId: me.id, bidderName: me.name, amount }),
+        body: JSON.stringify({ bidId, amount }),
       });
       const r = (await res.json()) as BidResult;
       pendingId.current = null;
@@ -210,15 +219,9 @@ function BidPanel({ snap, onResult }: { snap: AuctionSnapshot; onResult: (s: Auc
 
   return (
     <div className="bid-panel">
-      {!identity && (
-        <label className="field">
-          <span>Your display name</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Sandip" maxLength={24} autoComplete="nickname" />
-        </label>
-      )}
       {leading ? (
         <div className="leading">
-          <span className="dot" aria-hidden /> You hold the top bid{identity ? `, ${identity.name}` : ""}. We&apos;ll show it here the moment
+          <span className="dot" aria-hidden /> You hold the top bid, {user.displayName}. We&apos;ll show it here the moment
           someone outbids you.
         </div>
       ) : (
@@ -253,12 +256,8 @@ function BidPanel({ snap, onResult }: { snap: AuctionSnapshot; onResult: (s: Auc
       )}
       <div className="muted small">
         Minimum next bid {money(min)} · increments of {money(a.minIncrement)}
-        {identity && (
-          <>
-            {" "}
-            · bidding as <strong>{identity.name}</strong>
-          </>
-        )}
+        {" "}
+        · bidding as <strong>{user.displayName}</strong>
       </div>
       {notice && !(leading && notice.kind === "ok") && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
     </div>

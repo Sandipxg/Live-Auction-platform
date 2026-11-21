@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
+import { UserMenu } from "@/components/UserMenu";
+import { currentUser } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +16,8 @@ export const viewport: Viewport = {
   ],
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const user = await currentUser();
   return (
     <html lang="en">
       <head>
@@ -39,6 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/new" className="btn btn-sm btn-ink">
                 Start an auction
               </Link>
+              <UserMenu user={user} />
             </nav>
           </div>
         </header>
